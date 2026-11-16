@@ -61,25 +61,36 @@ function cleanUrl(href) {
   return href;
 }
 
-const findPipe = /\|/g;
-const splitPipe = / \|/;
 const slashPipe = /\\\|/g;
 
 function splitCells(tableRow, count) {
-  const row = tableRow.replace(findPipe, (match, offset, str) => {
-    let escaped = false;
-    let curr = offset;
-    while (--curr >= 0 && str[curr] === '\\') escaped = !escaped;
-    return escaped ? '|' : ' |';
-  });
-  const cells = row.split(splitPipe);
+  // Split on unescaped pipes. Skipping `\` + the next char is equivalent
+  // to marked's odd/even backslash count before each pipe.
+  const cells = [];
+  let start = 0;
+  let i = 0;
+  const len = tableRow.length;
+  while (i < len) {
+    const c = tableRow[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === '|') {
+      cells.push(tableRow.slice(start, i));
+      start = i + 1;
+    }
+    i++;
+  }
+  cells.push(tableRow.slice(start));
   if (!cells[0].trim()) cells.shift();
   if (cells.length > 0 && !cells.at(-1)?.trim()) cells.pop();
   if (count) {
     if (cells.length > count) cells.splice(count);
     else while (cells.length < count) cells.push('');
   }
-  for (let i = 0; i < cells.length; i++) cells[i] = cells[i].trim().replace(slashPipe, '|');
+  for (let i = 0; i < cells.length; i++) {
+    let cell = cells[i].trim();
+    if (cell.includes('\\|')) cell = cell.replace(slashPipe, '|');
+    cells[i] = cell;
+  }
   return cells;
 }
 
