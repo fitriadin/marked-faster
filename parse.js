@@ -94,12 +94,37 @@ function rtrim(str, c, invert) {
 
 const blankLineRe = /^[ \t]*$/;
 
+// Does `str` end with a blank line (`\n[ \t]*\n[ \t]*$`)? Backward scan:
+// trailing spaces/tabs, a newline, spaces/tabs, another newline.
+function hasTrailingBlankLine(str) {
+  let i = str.length;
+  while (i > 0 && (str[i - 1] === ' ' || str[i - 1] === '\t')) i--;
+  if (i === 0 || str[i - 1] !== '\n') return false;
+  i--;
+  while (i > 0 && (str[i - 1] === ' ' || str[i - 1] === '\t')) i--;
+  return i > 0 && str[i - 1] === '\n';
+}
+
+// Remove trailing blank lines, but only when there are two or more of them
+// (a single trailing blank line — i.e. one trailing newline — is kept).
 function trimTrailingBlankLines(str) {
-  const lines = str.split('\n');
-  let end = lines.length - 1;
-  while (end >= 0 && blankLineRe.test(lines[end])) end--;
-  if (lines.length - end <= 2) return str;
-  return lines.slice(0, end + 1).join('\n');
+  let i = str.length;
+  let blanks = 0;
+  for (;;) {
+    const nl = i === 0 ? -1 : str.lastIndexOf('\n', i - 1);
+    const lineStart = nl + 1;
+    let blank = true;
+    for (let k = lineStart; k < i; k++) {
+      const c = str[k];
+      if (c !== ' ' && c !== '\t') { blank = false; break; }
+    }
+    if (!blank) break;
+    blanks++;
+    if (nl < 0) { i = 0; break; }
+    i = nl;
+  }
+  if (blanks <= 1) return str;
+  return str.slice(0, i);
 }
 
 const multipleSpaceGlobal = /\s+/g;
@@ -457,7 +482,6 @@ const nonSpaceChar = /[^ ]/;
 const newLineCharGlobal = /\n/g;
 const tabCharGlobal = /\t/g;
 const leadingSpaceTab = /^[ \t]+/;
-const doubleBlankLine = /\n[ \t]*\n[ \t]*$/;
 const blockquoteStart = /^ {0,3}>/;
 const blockquoteSetextReplace = /\n {0,3}((?:=+|-+)[ \t]*)(?=\n|$)/g;
 const blockquoteSetextReplace2 = /^ {0,3}>[ \t]?/gm;
@@ -585,9 +609,36 @@ function linkInText(P, text) {
 
 // Mask links, code spans, HTML and escapes (length-preserving) so the
 // emphasis scans do not see delimiters inside them.
+// Cheap pre-check for the reflink mask: could `src` contain a reference
+// link or shortcut link whose label is defined? A reference link always
+// contains `][`; a shortcut link is a `[...]` span whose normalized
+// content is a defined label. False positives are harmless (the replace
+// re-checks); false negatives would be wrong, so the scan is conservative
+// (it advances by one past a `[` whose span contains another `[`).
+function hasDefinedRef(P, src) {
+  if (!P.hasLinks) return false;
+  if (src.includes('][')) return true;
+  const len = src.length;
+  let i = 0;
+  while (i < len) {
+    const open = src.indexOf('[', i);
+    if (open === -1) return false;
+    const close = src.indexOf(']', open + 1);
+    if (close === -1) return false;
+    const label = src.slice(open + 1, close);
+    if (label.length > 0 && !label.includes('[') && label.trim().length > 0) {
+      if (Object.hasOwn(P.links, normalizeLabel(label))) return true;
+      i = close + 1;
+    } else {
+      i = open + 1;
+    }
+  }
+  return false;
+}
+
 function maskSrc(P, src) {
   let masked = src;
-  if (src.includes('[')) {
+  if (src.includes('[') && hasDefinedRef(P, src)) {
     const maskReflink = (match0) => {
       const refStart = match0.lastIndexOf('[');
       if (!Object.hasOwn(P.links, normalizeLabel(match0.slice(refStart + 1, -1)))) return match0;
@@ -1460,7 +1511,7 @@ function parseList(P, src, start) {
 
     if (!list.loose) {
       if (endsWithBlankLine) list.loose = true;
-      else if (doubleBlankLine.test(raw)) endsWithBlankLine = true;
+      else if (hasTrailingBlankLine(raw)) endsWithBlankLine = true;
     }
 
     list.items.push({
@@ -1762,7 +1813,7 @@ function blockTokens(P, src, out, lastParagraphClipped = false) {
         if ((lastType === 'p' || lastType === 'x') && last) {
           last.x += '\n' + raw;
         } else {
-          if (!P.links[tag]) P.links[tag] = { href, title };
+          if (!P.links[tag]) { P.links[tag] = { href, title }; P.hasLinks = true; }
           lastType = 'def';
         }
         pos += rawLen;
@@ -1959,6 +2010,7 @@ export function parse(markdown) {
   const src = markdown.replace(carriageReturn, '\n');
   const P = {
     links: Object.create(null),
+    hasLinks: false,
     top: true,
     inLink: false,
     inRawBlock: false,
