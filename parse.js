@@ -143,8 +143,14 @@ function trimTrailingBlankLines(str) {
 }
 
 const multipleSpaceGlobal = /\s+/g;
+const labelNeedsSlowPath = /[\s\x80-\uFFFF]/;
 
 function normalizeLabel(label) {
+  // Fast path: ASCII with no whitespace needs no trim, no space collapse,
+  // and the toUpperCase().toLowerCase() round-trip (which only matters
+  // for non-ASCII case folding, e.g. ß -> SS -> ss) collapses to one
+  // toLowerCase().
+  if (!labelNeedsSlowPath.test(label)) return label.toLowerCase();
   return label.trim().replace(multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
 }
 
