@@ -705,10 +705,28 @@ function inlineTop(P, src) {
   return inline(P, src, 'html');
 }
 
+// True if src has at least two separate runs of the same emphasis
+// delimiter (*, _, ~). A single run can never pair with a closer, so
+// maskSrc + scanClosers can be skipped entirely in that case.
+function canPairEm(src) {
+  for (const ch of ['*', '_', '~']) {
+    let i = src.indexOf(ch);
+    if (i === -1) continue;
+    let j = i + 1;
+    while (src[j] === ch) j++;
+    if (src.indexOf(ch, j) !== -1) return true;
+  }
+  return false;
+}
+
+const NO_CLOSERS = { star: -1, under: -1, tilde: -1 };
+
 function inlineInner(P, src, mode) {
   const hasEm = src.includes('*') || src.includes('_') || src.includes('~');
-  const masked = hasEm ? maskSrc(P, src) : src;
-  const closers = hasEm ? scanClosers(masked) : null;
+  if (!hasEm) return tokenizeInlines(P, src, src, null, mode);
+  if (!canPairEm(src)) return tokenizeInlines(P, src, src, NO_CLOSERS, mode);
+  const masked = maskSrc(P, src);
+  const closers = scanClosers(masked);
   return tokenizeInlines(P, src, masked, closers, mode);
 }
 
