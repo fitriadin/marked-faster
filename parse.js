@@ -27,7 +27,7 @@ const escapeReplaceNoEncode = /[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)
 function escapeHtml(html, encode) {
   if (encode) {
     if (escapeTest.test(html)) return html.replace(escapeReplace, (ch) => ESCAPE_MAP[ch]);
-  } else if (escapeTestNoEncode.test(html)) {
+  } else if (escapeTest.test(html) && escapeTestNoEncode.test(html)) {
     return html.replace(escapeReplaceNoEncode, (ch) => ESCAPE_MAP[ch]);
   }
   return html;
@@ -47,8 +47,12 @@ function decodeNumericRefs(text) {
 }
 
 const percentDecode = /%25/g;
+// encodeURI leaves these unchanged; % is encoded to %25 and then restored
+// by the percentDecode replace, so it is a no-op too.
+const cleanUrlFast = /^[A-Za-z0-9\-_.!~*'();/?:@&=+$,#%]*$/;
 
 function cleanUrl(href) {
+  if (cleanUrlFast.test(href)) return href;
   try {
     href = encodeURI(href).replace(percentDecode, '%');
   } catch {
