@@ -331,58 +331,14 @@ const emStrongLDelimRe = edit(emStrongLDelimCore, 'u')
   .replace(/punct/g, _punctuationGfmStrongEm)
   .getRegex();
 
-const emStrongRDelimAstCore =
-  '^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)'
-  + '|[^*]+(?=[^*])'
-  + '|(?!\\*)punct(\\*+)(?=[\\s]|$)'
-  + '|notPunctSpace(\\*+)(?!\\*)(?=punctSpace|$)'
-  + '|(?!\\*)punctSpace(\\*+)(?=notPunctSpace)'
-  + '|[\\s](\\*+)(?!\\*)(?=punct)'
-  + '|(?!\\*)punct(\\*+)(?!\\*)(?=punct)'
-  + '|notPunctSpace(\\*+)(?=notPunctSpace)';
-
-const emStrongRDelimAstRe = edit(emStrongRDelimAstCore, 'gu')
-  .replace(/notPunctSpace/g, _notPunctuationOrSpaceGfmStrongEm)
-  .replace(/punctSpace/g, _punctuationOrSpaceGfmStrongEm)
-  .replace(/punct/g, _punctuationGfmStrongEm)
-  .getRegex();
-
-const emStrongRDelimUndRe = edit(
-  '^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)'
-  + '|[^_]+(?=[^_])'
-  + '|(?!_)punct(_+)(?=[\\s]|$)'
-  + '|notPunctSpace(_+)(?!_)(?=punctSpace|$)'
-  + '|(?!_)punctSpace(_+)(?=notPunctSpace)'
-  + '|[\\s](_+)(?!_)(?=punct)'
-  + '|(?!_)punct(_+)(?!_)(?=punct)', 'gu')
-  .replace(/notPunctSpace/g, _notPunctuationOrSpace)
-  .replace(/punctSpace/g, _punctuationOrSpace)
-  .replace(/punct/g, _punctuation)
-  .getRegex();
-
 const delLDelimRe = edit(/^~~?(?:((?!~)punct)|[^\s~])/, 'u')
-  .replace(/punct/g, _punctuation)
-  .getRegex();
-
-const delRDelimCore =
-  '^[^~]+(?=[^~])'
-  + '|(?!~)punct(~~?)(?=[\\s]|$)'
-  + '|notPunctSpace(~~?)(?!~)(?=punctSpace|$)'
-  + '|(?!~)punctSpace(~~?)(?=notPunctSpace)'
-  + '|[\\s](~~?)(?!~)(?=punct)'
-  + '|(?!~)punct(~~?)(?!~)(?=punct)'
-  + '|notPunctSpace(~~?)(?=notPunctSpace)';
-
-const delRDelimRe = edit(delRDelimCore, 'gu')
-  .replace(/notPunctSpace/g, _notPunctuationOrSpace)
-  .replace(/punctSpace/g, _punctuationOrSpace)
   .replace(/punct/g, _punctuation)
   .getRegex();
 
 // The `^`-anchored first alternatives of the right-delimiter scans, as
 // sticky patterns: they can only match at the start of the closer window,
-// so the scan checks them once up front and then runs the global pattern
-// from there on the un-sliced source.
+// so the scan checks them once up front and then runs the hand-written
+// closer scan (nextCloser) from there on the un-sliced source.
 const emStrongRDelimAstFirst = /[^_*]*?__[^_*]*?\*[^_*]*?(?=__)/yu;
 const emStrongRDelimUndFirst = /[^_*]*?\*\*[^_*]*?_[^_*]*?(?=\*\*)/yu;
 const delRDelimFirst = /[^~]+(?=[^~])/y;
@@ -701,6 +657,114 @@ function inlineInner(P, src, mode) {
   return tokenizeInlines(P, src, masked, closers, mode);
 }
 
+const whitespaceRe = /\s/u;
+
+// Flanking class of one code point: 0 = whitespace, 1 = punctuation/symbol,
+// 2 = anything else. ASCII is a table lookup; the rest uses the same Unicode
+// classes the delimiter regexes use. For `*` in GFM, `~` counts as "other".
+function flankClassOf(ch, gfmStar) {
+  if (ch.length === 1) {
+    const code = ch.charCodeAt(0);
+    if (code < 128) {
+      if (code === 32 || (code >= 9 && code <= 13)) return 0;
+      if (code === 126 && gfmStar) return 2;
+      if ((code >= 33 && code <= 47) || (code >= 58 && code <= 64)
+        || (code >= 91 && code <= 96) || (code >= 123 && code <= 126)) return 1;
+      return 2;
+    }
+  }
+  if (whitespaceRe.test(ch)) return 0;
+  if (_punctuation.test(ch)) return 1;
+  return 2;
+}
+
+// Which right-delimiter group (1-6) a delimiter run belongs to, from the
+// flanking of the characters around it — the same classification the
+// RDelim regexes encode. 0 means the run cannot close (neither flanking).
+// For `_` there is no group 6 (an intraword `_` run never closes).
+function delimGroup(masked, runStart, runEnd, gfmStar, noGroup6) {
+  let b;
+  if (runStart === 0) {
+    b = -1;
+  } else {
+    let ch;
+    const c1 = masked.charCodeAt(runStart - 1);
+    if (c1 >= 0xdc00 && c1 <= 0xdfff && runStart >= 2) {
+      const c0 = masked.charCodeAt(runStart - 2);
+      ch = (c0 >= 0xd800 && c0 <= 0xdbff) ? masked.slice(runStart - 2, runStart) : masked[runStart - 1];
+    } else {
+      ch = masked[runStart - 1];
+    }
+    b = flankClassOf(ch, gfmStar);
+  }
+  let a;
+  if (runEnd >= masked.length) {
+    a = -1;
+  } else {
+    let ch;
+    const c0 = masked.charCodeAt(runEnd);
+    if (c0 >= 0xd800 && c0 <= 0xdbff && runEnd + 1 < masked.length) {
+      const c1 = masked.charCodeAt(runEnd + 1);
+      ch = (c1 >= 0xdc00 && c1 <= 0xdfff) ? masked.slice(runEnd, runEnd + 2) : masked[runEnd];
+    } else {
+      ch = masked[runEnd];
+    }
+    a = flankClassOf(ch, gfmStar);
+  }
+  if (b === 1) {
+    if (a === 0 || a === -1) return 1;
+    if (a === 1) return 5;
+    if (a === 2) return 3;
+  } else if (b === 2) {
+    if (a === 1 || a === 0 || a === -1) return 2;
+    if (a === 2) return noGroup6 ? 0 : 6;
+  } else if (b === 0) {
+    if (a === 1) return 4;
+    if (a === 2) return 3;
+  }
+  return 0;
+}
+
+// Length (1 or 2 UTF-16 units) of the code point ending at `index`.
+function prevCpLen(s, index) {
+  if (index >= 2) {
+    const c1 = s.charCodeAt(index - 1);
+    if (c1 >= 0xdc00 && c1 <= 0xdfff) {
+      const c0 = s.charCodeAt(index - 2);
+      if (c0 >= 0xd800 && c0 <= 0xdbff) return 2;
+    }
+  }
+  return 1;
+}
+
+// Shared result slot for nextCloser (the scan is synchronous; callers copy
+// the values to locals before any recursive parse).
+const closerResult = { start: -1, len: 0, group: 0 };
+
+// Find the next delimiter run at or after `from` that can close emphasis
+// (has a flanking group). Fills closerResult and returns true, or false
+// when there is none. For `~`, runs of 3+ never close and are skipped.
+function nextCloser(masked, from, delim, gfmStar, noGroup6) {
+  const len = masked.length;
+  let i = masked.indexOf(delim, from);
+  while (i !== -1) {
+    let j = i + 1;
+    while (j < len && masked[j] === delim) j++;
+    const runLen = j - i;
+    if (delim !== '~' || runLen <= 2) {
+      const group = delimGroup(masked, i, j, gfmStar, noGroup6);
+      if (group !== 0) {
+        closerResult.start = i;
+        closerResult.len = runLen;
+        closerResult.group = group;
+        return true;
+      }
+    }
+    i = masked.indexOf(delim, j);
+  }
+  return false;
+}
+
 function emStrong(P, src, masked, pos, prevChar, closers, mode, out) {
   const match = at(S_EM_STRONG_LDELIM, src, pos);
   if (!match) return 0;
@@ -738,8 +802,6 @@ function emStrong(P, src, masked, pos, prevChar, closers, mode, out) {
   if (!nextChar || !prevChar || prevPunct) {
     let lLength = 0;
     while (lLength < match[0].length && match[0][lLength] === delimChar) lLength++;
-    let rDelim;
-    let rLength;
     let delimTotal = lLength;
     let midDelimTotal = 0;
 
@@ -747,41 +809,39 @@ function emStrong(P, src, masked, pos, prevChar, closers, mode, out) {
     const openerCanClose = !!runPrevChar.trim()
       && (!!nextChar || (delimChar === '*' && !runPrevPunct));
     if (delimChar !== '*' && delimChar !== '_') return 0;
-    const endReg = delimChar === '*' ? emStrongRDelimAstRe : emStrongRDelimUndRe;
-    const lastPossible = delimChar === '*' ? closers.star : closers.under;
+    const gfmStar = delimChar === '*';
+    const lastPossible = gfmStar ? closers.star : closers.under;
     const windowStart = pos + lLength;
     if (lastPossible < windowStart) return 0;
 
-    const firstRe = delimChar === '*' ? emStrongRDelimAstFirst : emStrongRDelimUndFirst;
+    const firstRe = gfmStar ? emStrongRDelimAstFirst : emStrongRDelimUndFirst;
     let scanPos = windowStart;
     const firstMatch = at(firstRe, masked, windowStart);
     if (firstMatch) scanPos = windowStart + firstMatch[0].length;
-    endReg.lastIndex = scanPos;
 
-    let m;
-    while ((m = endReg.exec(masked)) !== null) {
-      if (m.index > lastPossible) break;
-      rDelim = m[1] || m[2] || m[3] || m[4] || m[5] || m[6];
-      if (!rDelim) continue;
-      rLength = rDelim.length;
+    while (nextCloser(masked, scanPos, delimChar, gfmStar, !gfmStar)) {
+      const runStart = closerResult.start;
+      const rLength0 = closerResult.len;
+      const group = closerResult.group;
+      if (runStart - prevCpLen(masked, runStart) > lastPossible) break;
+      scanPos = runStart + rLength0;
 
-      if (m[3] || m[4]) {
-        delimTotal += rLength;
+      if (group === 3 || group === 4) {
+        delimTotal += rLength0;
         continue;
-      } else if (m[5] || m[6] || openerCanClose) {
-        if (midRun && (m[5] || m[6])) break;
-        if (runLength % 3 && !((runLength + rLength) % 3)) {
-          midDelimTotal += rLength;
+      } else if (group === 5 || group === 6 || openerCanClose) {
+        if (midRun && (group === 5 || group === 6)) break;
+        if (runLength % 3 && !((runLength + rLength0) % 3)) {
+          midDelimTotal += rLength0;
           continue;
         }
       }
 
-      delimTotal -= rLength;
+      delimTotal -= rLength0;
       if (delimTotal > 0) continue;
 
-      rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
-      const lastCharLength = firstCpLen(m[0]);
-      const rawLen = lLength + (m.index - windowStart) + lastCharLength + rLength;
+      const rLength = Math.min(rLength0, rLength0 + delimTotal + midDelimTotal);
+      const rawLen = lLength + (runStart - windowStart) + rLength;
 
       if (Math.min(lLength, rLength) % 2) {
         const inner = inline(P, src.slice(pos + 1, pos + rawLen - 1), mode);
@@ -804,8 +864,6 @@ function tryDel(P, src, masked, pos, prevChar, closers, mode, out) {
 
   if (!nextChar || !prevChar || (prevChar !== '' && punctuationRe.test(prevChar))) {
     const lLength = match[0][1] === '~' ? 2 : 1;
-    let rDelim;
-    let rLength;
     let delimTotal = lLength;
 
     const lastPossible = closers.tilde;
@@ -815,27 +873,25 @@ function tryDel(P, src, masked, pos, prevChar, closers, mode, out) {
     let scanPos = windowStart;
     const firstMatch = at(delRDelimFirst, masked, windowStart);
     if (firstMatch) scanPos = windowStart + firstMatch[0].length;
-    delRDelimRe.lastIndex = scanPos;
 
-    let m;
-    while ((m = delRDelimRe.exec(masked)) !== null) {
-      if (m.index > lastPossible) break;
-      rDelim = m[1] || m[2] || m[3] || m[4] || m[5] || m[6];
-      if (!rDelim) continue;
-      rLength = rDelim.length;
-      if (rLength !== lLength) continue;
+    while (nextCloser(masked, scanPos, '~', false, false)) {
+      const runStart = closerResult.start;
+      const rLength0 = closerResult.len;
+      const group = closerResult.group;
+      if (runStart - prevCpLen(masked, runStart) > lastPossible) break;
+      scanPos = runStart + rLength0;
+      if (rLength0 !== lLength) continue;
 
-      if (m[3] || m[4]) {
-        delimTotal += rLength;
+      if (group === 3 || group === 4) {
+        delimTotal += rLength0;
         continue;
       }
 
-      delimTotal -= rLength;
+      delimTotal -= rLength0;
       if (delimTotal > 0) continue;
 
-      rLength = Math.min(rLength, rLength + delimTotal);
-      const lastCharLength = firstCpLen(m[0]);
-      const rawLen = lLength + (m.index - windowStart) + lastCharLength + rLength;
+      const rLength = Math.min(rLength0, rLength0 + delimTotal);
+      const rawLen = lLength + (runStart - windowStart) + rLength;
       const inner = inline(P, src.slice(pos + lLength, pos + rawLen - lLength), mode);
       out.s += mode === 'text' ? inner : '<del>' + inner + '</del>';
       return rawLen;
@@ -1277,6 +1333,35 @@ function parseBlockquote(P, src, start) {
   return { rec: { t: 'bq', r: tokens, raw, text }, len: raw.length };
 }
 
+// Index of the first character of `line` that is not a space.
+function firstNonSpace(line) {
+  let p = 0;
+  while (p < line.length && line[p] === ' ') p++;
+  return p;
+}
+
+// Does `line` begin a block that ends a list item's content? The begin
+// regexes all anchor at the line start with at most `bi` spaces, so only the
+// regex matching the line's first non-space character can match. `full`
+// also tests the blockquote and next-bullet rules (the item's continuation
+// lines test only fences, heading, HTML and hr).
+function listLineBreaks(line, bi, fencesBeginRe, headingBeginRe, htmlBeginRe, blockquoteBeginRe, nextBulletRe, hrLineRe, full) {
+  const p = firstNonSpace(line);
+  if (p > bi) return false;
+  const fc = line[p];
+  if (fc === '`' || fc === '~') return fencesBeginRe.test(line);
+  if (fc === '#') return headingBeginRe.test(line);
+  if (fc === '<') return htmlBeginRe.test(line);
+  if (full && fc === '>') return blockquoteBeginRe.test(line);
+  if (fc === '*' || fc === '+' || fc === '-' || (fc >= '0' && fc <= '9')) {
+    if (full && nextBulletRe.test(line)) return true;
+    if ((fc === '-' || fc === '*') && hrLineRe.test(line)) return true;
+    return false;
+  }
+  if (fc === '_') return hrLineRe.test(line);
+  return false;
+}
+
 function parseList(P, src, start) {
   const cap0 = at(S_LIST, src, start);
   if (!cap0) return null;
@@ -1319,7 +1404,7 @@ function parseList(P, src, start) {
     if (blankLine) {
       indent = bulletIndent + 1;
     } else {
-      indent = line.search(nonSpaceChar);
+      indent = firstNonSpace(line);
       indent = indent > 4 ? 1 : indent;
       itemContents = line.slice(indent);
       indent += bulletIndent;
@@ -1347,22 +1432,14 @@ function parseList(P, src, start) {
           ? nextLn.replace(leadingSpaceTab, (ws) => expandTabs(ws))
           : nextLn;
 
-        if (fencesBeginRe.test(nextLn)) break;
-        if (headingBeginRe.test(nextLn)) break;
-        if (htmlBeginRe.test(nextLn)) break;
-        if (blockquoteBeginRe.test(nextLn)) break;
-        if (nextBulletRe.test(nextLn)) break;
-        if (hrLineRe.test(nextLn)) break;
+        if (listLineBreaks(nextLn, bi, fencesBeginRe, headingBeginRe, htmlBeginRe, blockquoteBeginRe, nextBulletRe, hrLineRe, true)) break;
 
-        if (nextLineWithoutTabs.search(nonSpaceChar) >= indent || !nextLn.trim()) {
+        if (firstNonSpace(nextLineWithoutTabs) >= indent || !nextLn.trim()) {
           itemContents += '\n' + nextLineWithoutTabs.slice(indent);
         } else {
           if (blankLine) break;
-          if ((line.includes('\t') ? line.replace(tabCharGlobal, '    ') : line).search(nonSpaceChar) >= 4) break;
-          if (fencesBeginRe.test(line)) break;
-          if (headingBeginRe.test(line)) break;
-          if (htmlBeginRe.test(line)) break;
-          if (hrLineRe.test(line)) break;
+          if (firstNonSpace(line.includes('\t') ? line.replace(tabCharGlobal, '    ') : line) >= 4) break;
+          if (listLineBreaks(line, bi, fencesBeginRe, headingBeginRe, htmlBeginRe, blockquoteBeginRe, nextBulletRe, hrLineRe, false)) break;
 
           const setextContinuation = setextLine.test(nextLn)
             && lheadingRe.test(line + '\n' + nextLn);
